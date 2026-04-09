@@ -205,3 +205,8 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# SMParamScan
+.docker_build_hash
+.hdecay_local/
+plots/
