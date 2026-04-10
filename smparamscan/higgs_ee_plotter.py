@@ -689,8 +689,150 @@ def plot_individual_kq_scans(quark_results, output_dir="plots", show=False):
     return path
 
 
+def plot_ee_vs_multiplicity(mult_results, output_dir="plots", show=False):
+    """Plot EE as a function of hadronic fragmentation multiplicity.
+
+    Shows the crossover: at low M, hadronization hurts EE (naive model);
+    at M > N_c, hadronization helps EE (multiplicity wins over color loss).
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    M_q = mult_results["M_quarks"]
+    ee_frag = mult_results["ee_fragmented"]
+    ee_part = mult_results["ee_partonic"]
+    ee_had = mult_results["ee_naive_hadronized"]
+
+    fig, ax = plt.subplots(figsize=(11, 7))
+
+    ax.plot(M_q, ee_frag, color="#1f77b4", linewidth=2.5,
+            label="Fragmented EE (multiplicity model)")
+    ax.axhline(ee_part[0], color="#2ca02c", linewidth=2, linestyle="--",
+               label=f"Partonic EE = {ee_part[0]:.4f}")
+    ax.axhline(ee_had[0], color="#d62728", linewidth=2, linestyle=":",
+               label=f"Naive hadronized (M=1) = {ee_had[0]:.4f}")
+
+    # Mark crossover at M_q = N_c = 3 (where fragmented = partonic)
+    ax.axvline(x=3.0, color="#2ca02c", alpha=0.5, linestyle="-.",
+               label=r"$M_q = N_c = 3$ (crossover)")
+    ax.axvline(x=1.0, color="#d62728", alpha=0.5, linestyle="-.",
+               label=r"$M_q = 1$ (naive hadronized)")
+
+    # Shade regions
+    ax.fill_between(M_q[M_q <= 3.0], ee_had[0], ee_part[0],
+                    alpha=0.08, color="#d62728",
+                    label="Hadronization reduces EE")
+    ax.fill_between(M_q[M_q >= 3.0], ee_part[0],
+                    np.maximum(ee_frag[M_q >= 3.0], ee_part[0]),
+                    alpha=0.08, color="#2ca02c",
+                    label="Hadronization increases EE")
+
+    # Mark realistic multiplicity range (~10-50 for quarks at Higgs scale)
+    ax.axvspan(10, 50, alpha=0.12, color="#ff7f0e", zorder=0,
+               label="Realistic $M_q$ range\n(~10-50 at Higgs scale)")
+
+    # Compute and annotate EE at realistic M
+    M_realistic = 20
+    idx_r = np.argmin(np.abs(M_q - M_realistic))
+    ee_r = ee_frag[idx_r]
+    ax.plot(M_realistic, ee_r, "D", color="#ff7f0e", markersize=10,
+            zorder=10, markeredgecolor="k", markeredgewidth=0.8)
+    ax.annotate(f"$M_q$=20: EE={ee_r:.4f}\n({(ee_r-ee_part[0])/ee_part[0]*100:+.1f}% vs partonic)",
+                xy=(M_realistic, ee_r),
+                xytext=(M_realistic * 2.5, ee_r - 0.01),
+                fontsize=10, color="#ff7f0e",
+                arrowprops=dict(arrowstyle="->", color="#ff7f0e"))
+
+    ax.set_xscale("log")
+    ax.set_xlabel(r"Effective hadronic multiplicity $M_q$ (quarks)", fontsize=14)
+    ax.set_ylabel("Entanglement Entropy", fontsize=14)
+    ax.set_title(
+        "Higgs EE vs hadronic fragmentation multiplicity (SM branching ratios)\n"
+        r"$M_g = \frac{9}{4} M_q$ (QCD Casimir ratio); "
+        "crossover at $M_q = N_c = 3$",
+        fontsize=12)
+    ax.legend(fontsize=9, loc="lower right", ncol=1)
+    ax.tick_params(labelsize=12)
+    ax.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    path = os.path.join(output_dir, "higgs_ee_vs_multiplicity.pdf")
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+    plt.close(fig)
+    return path
+
+
+def plot_kf_with_multiplicity(kf_mult_results, output_dir="plots", show=False):
+    """Plot kappa_f scan at several hadronic multiplicity values.
+
+    Shows how the optimal kappa_f shifts as multiplicity increases:
+    more multiplicity -> hadronization helps -> optimum moves toward
+    maximizing colored-channel fraction.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    kf = kf_mult_results["kappa_f"]
+    ee_part = kf_mult_results["ee_partonic"]
+    M_vals = kf_mult_results["M_values_quarks"]
+
+    fig, ax = plt.subplots(figsize=(11, 7))
+
+    # Plot partonic first
+    valid = ~np.isnan(ee_part)
+    ax.plot(kf[valid], ee_part[valid], color="black", linewidth=2.5,
+            linestyle="--", label="Partonic (full color)", zorder=5)
+
+    # Color gradient for multiplicity values
+    colors = plt.cm.plasma(np.linspace(0.15, 0.85, len(M_vals)))
+
+    for j, M_q in enumerate(M_vals):
+        key = f"ee_M{M_q:.0f}"
+        ee = kf_mult_results[key]
+        valid_m = ~np.isnan(ee)
+        lbl = f"$M_q$ = {M_q:.0f}"
+        if M_q == 1:
+            lbl += " (naive hadr.)"
+        elif M_q == 3:
+            lbl += " ($= N_c$, crossover)"
+        ls = "-" if M_q >= 3 else ":"
+        ax.plot(kf[valid_m], ee[valid_m], color=colors[j], linewidth=2,
+                linestyle=ls, label=lbl)
+
+        # Mark maximum
+        max_idx = np.nanargmax(ee)
+        ax.plot(kf[max_idx], ee[max_idx], "*", color=colors[j],
+                markersize=12, zorder=10, markeredgecolor="k",
+                markeredgewidth=0.5)
+
+    # SM point
+    ax.axvline(x=1.0, color="gray", linestyle=":", alpha=0.5,
+               label="SM ($\\kappa_f = 1$)")
+
+    ax.set_xscale("log")
+    ax.set_xlabel(r"$\kappa_f$ (universal fermion coupling)", fontsize=14)
+    ax.set_ylabel("Entanglement Entropy", fontsize=14)
+    ax.set_title(
+        "Higgs EE vs $\\kappa_f$ at different hadronic multiplicities\n"
+        "Higher multiplicity $\\to$ hadronization increases EE $\\to$ "
+        "optimum shifts",
+        fontsize=12)
+    ax.legend(fontsize=9, loc="lower right")
+    ax.tick_params(labelsize=12)
+    ax.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    path = os.path.join(output_dir, "higgs_ee_kf_multiplicity.pdf")
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+    plt.close(fig)
+    return path
+
+
 def plot_all_higgs_ee(results, output_dir="plots", show=False,
-                      results_kf=None, quark_results=None):
+                      results_kf=None, quark_results=None,
+                      mult_results=None, kf_mult_results=None):
     """Generate all Higgs EE plots."""
     paths = []
 
@@ -735,6 +877,17 @@ def plot_all_higgs_ee(results, output_dir="plots", show=False,
     # Individual quark scans
     if quark_results is not None:
         path = plot_individual_kq_scans(quark_results, output_dir, show)
+        paths.append(path)
+        print(f"  Saved: {path}")
+
+    # Fragmentation multiplicity plots
+    if mult_results is not None:
+        path = plot_ee_vs_multiplicity(mult_results, output_dir, show)
+        paths.append(path)
+        print(f"  Saved: {path}")
+
+    if kf_mult_results is not None:
+        path = plot_kf_with_multiplicity(kf_mult_results, output_dir, show)
         paths.append(path)
         print(f"  Saved: {path}")
 

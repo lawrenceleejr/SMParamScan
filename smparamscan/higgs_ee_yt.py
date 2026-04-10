@@ -198,9 +198,10 @@ def compute_higgs_ee_hadronized(brs):
 
     EE_had = 1 - Sum_i P_i BR_i^2
 
-    After hadronization, quarks and gluons form color-singlet hadrons.
-    The color degree of freedom is no longer observable, so N_c -> 1.
-    This INCREASES purity (decreases EE) for colored channels.
+    NOTE: This is the *naive* hadronization model that only accounts for
+    the loss of observable color DOF. It MISSES the competing effect of
+    hadronic multiplicity — see compute_higgs_ee_fragmented() for the
+    corrected model.
     """
     purity = 0.0
     for ch in ALL_CHANNELS:
@@ -216,6 +217,8 @@ def compute_higgs_ee_inclusive(brs):
     After hadronization, gg and ss produce overlapping sets of light hadrons
     that are experimentally indistinguishable. Merge them into one channel.
     Heavy quarks (bb, cc) remain distinguishable via flavor tagging.
+
+    NOTE: Same caveat as hadronized — misses multiplicity effect.
     """
     purity = 0.0
     br_light = 0.0
@@ -232,6 +235,86 @@ def compute_higgs_ee_inclusive(brs):
     # Merged light-hadron channel (P = 1/2 for all sub-channels)
     purity += 0.5 * br_light**2
     return 1.0 - purity
+
+
+# ── Fragmentation multiplicity model ──────────────────────────────────
+#
+# Physics: When h -> qq-bar, the qq-bar pair hadronizes into many color-
+# singlet hadrons. The partonic picture has purity P/(N_c) per quark
+# (spin x color maximally mixed). After hadronization:
+#
+#   1. Color DOF become unobservable (purity goes UP: P/N_c -> P)
+#   2. But the single partonic channel fragments into M_eff distinguishable
+#      hadronic configurations (purity goes DOWN: P -> P/M_eff)
+#
+# Net purity after fragmentation: P_i / M_eff^i
+#
+# The crossover where these cancel: M_eff = N_c (3 for quarks, 8 for gluons).
+# For M_eff > N_c, hadronization INCREASES EE (the user's correct intuition).
+#
+# At the Higgs scale (~62 GeV per parton), typical hadronic multiplicities
+# are >> N_c, so the multiplicity effect dominates.
+
+# Channels that undergo hadronization (colored final states)
+COLORED_CHANNELS = {"bb", "cc", "ss", "tt", "gg"}
+
+
+def compute_higgs_ee_fragmented(brs, M_quarks=1.0, M_gluons=1.0):
+    """EE with hadronic fragmentation multiplicity.
+
+    For colored channels, the single partonic channel fragments into M_eff
+    distinguishable hadronic final states. The purity per channel becomes
+    P_i / M_eff instead of P_i / N_c (partonic) or P_i (naive hadronized).
+
+    Parameters
+    ----------
+    brs : dict
+        Branching ratios.
+    M_quarks : float
+        Effective hadronic multiplicity for quark channels.
+        M=1 recovers naive hadronized; M=N_c=3 recovers partonic; M>3 is
+        the regime where hadronization increases EE.
+    M_gluons : float
+        Effective hadronic multiplicity for gluon channels.
+        M=1 recovers naive hadronized; M=N_c=8 recovers partonic.
+
+    Returns
+    -------
+    float
+        Entanglement entropy.
+    """
+    purity = 0.0
+    for ch in ALL_CHANNELS:
+        br = brs.get(ch, 0.0)
+        P = SPIN_FACTORS[ch]
+        if ch == "gg":
+            purity += (P / M_gluons) * br**2
+        elif ch in COLORED_CHANNELS:
+            purity += (P / M_quarks) * br**2
+        else:
+            # Non-colored channels: unchanged
+            purity += P * br**2
+    return 1.0 - purity
+
+
+def compute_crossover_multiplicity():
+    """Compute the hadronic multiplicity where fragmented EE = partonic EE.
+
+    This is simply M = N_c for each channel type:
+      quarks: M = 3
+      gluons: M = 8
+
+    Returns dict with crossover values and explanation.
+    """
+    return {
+        "quarks": 3,
+        "gluons": 8,
+        "explanation": (
+            "When M_eff = N_c, the fragmentation multiplicity exactly "
+            "compensates for the loss of color coherence. "
+            "For M > N_c, hadronization increases EE."
+        ),
+    }
 
 
 def compute_higgs_ee_simple(brs):
@@ -714,5 +797,85 @@ def scan_higgs_kq(quark, kq_min=0.01, kq_max=20.0, npoints=500):
         results["total_width"][i] = total
         for ch in ALL_CHANNELS:
             results[f"br_{ch}"][i] = brs.get(ch, 0.0)
+
+    return results
+
+
+# ── Multiplicity scans ────────────────────────────────────────────────
+
+def scan_ee_vs_multiplicity(brs=None, M_min=1.0, M_max=200.0, npoints=500,
+                            gluon_ratio=9.0/4.0):
+    """Scan EE as a function of hadronic fragmentation multiplicity.
+
+    Parameters
+    ----------
+    brs : dict or None
+        Branching ratios to use. Defaults to SM BRs.
+    M_min, M_max : float
+        Range of quark multiplicity M_q. Gluon multiplicity is
+        M_g = M_q * gluon_ratio (from color Casimir C_A/C_F = 9/4).
+    gluon_ratio : float
+        Ratio M_gluons / M_quarks. Default 9/4 from leading-order QCD.
+
+    Returns
+    -------
+    dict with keys: M_quarks, M_gluons, ee_fragmented, ee_partonic,
+    ee_naive_hadronized.
+    """
+    if brs is None:
+        brs = dict(SM_BRS)
+
+    M_values = np.logspace(np.log10(M_min), np.log10(M_max), npoints)
+    ee_frag = np.zeros(npoints)
+    ee_part = compute_higgs_ee_partonic(brs)
+    ee_had = compute_higgs_ee_hadronized(brs)
+
+    for i, M_q in enumerate(M_values):
+        M_g = M_q * gluon_ratio
+        ee_frag[i] = compute_higgs_ee_fragmented(brs, M_quarks=M_q, M_gluons=M_g)
+
+    return {
+        "M_quarks": M_values,
+        "M_gluons": M_values * gluon_ratio,
+        "ee_fragmented": ee_frag,
+        "ee_partonic": np.full(npoints, ee_part),
+        "ee_naive_hadronized": np.full(npoints, ee_had),
+    }
+
+
+def scan_kf_with_multiplicity(kf_min=0.05, kf_max=10.0, npoints=500,
+                               M_values_quarks=None, gluon_ratio=9.0/4.0):
+    """Scan kappa_f at several hadronic multiplicity values.
+
+    Returns dict with kappa_f array and ee arrays for each multiplicity.
+    """
+    if M_values_quarks is None:
+        M_values_quarks = [1.0, 3.0, 10.0, 30.0, 100.0]
+
+    kf_arr = np.logspace(np.log10(kf_min), np.log10(kf_max), npoints)
+    results = {"kappa_f": kf_arr}
+
+    # Always include partonic
+    ee_part = np.zeros(npoints)
+    for i, kf in enumerate(kf_arr):
+        brs, _ = compute_higgs_brs_kf(kf)
+        if brs is None:
+            ee_part[i] = np.nan
+        else:
+            ee_part[i] = compute_higgs_ee_partonic(brs)
+    results["ee_partonic"] = ee_part
+
+    for M_q in M_values_quarks:
+        M_g = M_q * gluon_ratio
+        key = f"ee_M{M_q:.0f}"
+        ee = np.zeros(npoints)
+        for i, kf in enumerate(kf_arr):
+            brs, _ = compute_higgs_brs_kf(kf)
+            if brs is None:
+                ee[i] = np.nan
+            else:
+                ee[i] = compute_higgs_ee_fragmented(brs, M_quarks=M_q, M_gluons=M_g)
+        results[key] = ee
+    results["M_values_quarks"] = M_values_quarks
 
     return results
