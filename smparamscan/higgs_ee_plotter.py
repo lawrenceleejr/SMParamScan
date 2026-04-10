@@ -519,8 +519,178 @@ def plot_kf_ee_decomposition(results_kf, output_dir="plots", show=False):
     return path
 
 
+def plot_kf_three_regimes(results_kf, output_dir="plots", show=False):
+    """Compare partonic, hadronized, and inclusive EE vs kappa_f.
+
+    Key plot: shows that the three regimes peak at different kappa_f,
+    revealing the tension between the top (partonic) and other quarks
+    (hadronized).
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    kf = results_kf["kappa_f"]
+    ee_p = results_kf["ee_partonic"]
+    ee_h = results_kf["ee_hadronized"]
+    ee_i = results_kf["ee_inclusive"]
+    hcost = results_kf.get("hadronization_cost")
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 10), sharex=True,
+                                    gridspec_kw={"height_ratios": [2.5, 1]})
+
+    # ── Top panel: three EE regimes ──
+    valid_p = ~np.isnan(ee_p)
+    valid_h = ~np.isnan(ee_h)
+    valid_i = ~np.isnan(ee_i)
+
+    ax1.plot(kf[valid_p], ee_p[valid_p], color="#1f77b4", linewidth=2.5,
+             label="Partonic (full color)")
+    ax1.plot(kf[valid_h], ee_h[valid_h], color="#d62728", linewidth=2.5,
+             label="Hadronized ($N_c \\to 1$)")
+    ax1.plot(kf[valid_i], ee_i[valid_i], color="#ff7f0e", linewidth=2,
+             linestyle="--", label="Inclusive (merge light hadrons)")
+
+    # Mark maxima
+    for ee, color, label, regime in [
+        (ee_p, "#1f77b4", "partonic", "Partonic"),
+        (ee_h, "#d62728", "hadronized", "Hadronized"),
+    ]:
+        max_idx = np.nanargmax(ee)
+        ax1.plot(kf[max_idx], ee[max_idx], "*", color=color, markersize=14,
+                 zorder=10, markeredgecolor="k", markeredgewidth=0.5)
+        ax1.annotate(f"{regime} max\n$\\kappa_f$={kf[max_idx]:.2f}",
+                     xy=(kf[max_idx], ee[max_idx]),
+                     xytext=(kf[max_idx] * 1.8, ee[max_idx] - 0.02),
+                     fontsize=9, color=color,
+                     arrowprops=dict(arrowstyle="->", color=color, alpha=0.7))
+
+    # SM point
+    sm_idx = np.argmin(np.abs(kf - 1.0))
+    ax1.axvline(x=1.0, color="gray", linestyle=":", alpha=0.5)
+    ax1.plot(1.0, ee_p[sm_idx], "o", color="#1f77b4", markersize=10,
+             zorder=11, markeredgecolor="k", markeredgewidth=0.8)
+    ax1.plot(1.0, ee_h[sm_idx], "s", color="#d62728", markersize=8,
+             zorder=11, markeredgecolor="k", markeredgewidth=0.8)
+
+    # Shade the hadronization cost region
+    ax1.fill_between(kf[valid_p & valid_h], ee_h[valid_p & valid_h],
+                     ee_p[valid_p & valid_h], alpha=0.12, color="gray",
+                     label="Hadronization cost")
+
+    ax1.set_ylabel("Entanglement Entropy", fontsize=14)
+    ax1.set_title(
+        r"Higgs EE: partonic vs hadronized regimes"
+        "\n(top quark sees partonic; light quarks see hadronized)",
+        fontsize=13)
+    ax1.legend(fontsize=10, loc="lower right")
+    ax1.tick_params(labelsize=12)
+    ax1.grid(True, alpha=0.3)
+
+    # ── Bottom panel: hadronization cost ──
+    if hcost is not None:
+        valid_hc = ~np.isnan(hcost)
+        ax2.plot(kf[valid_hc], hcost[valid_hc], color="#2ca02c", linewidth=2.5)
+        ax2.fill_between(kf[valid_hc], 0, hcost[valid_hc],
+                         alpha=0.2, color="#2ca02c")
+        ax2.plot(1.0, hcost[sm_idx], "o", color="#2ca02c", markersize=8,
+                 zorder=5, markeredgecolor="k", markeredgewidth=0.8,
+                 label=f"SM: $\\Delta$EE = {hcost[sm_idx]:.3f}")
+        ax2.axvline(x=1.0, color="gray", linestyle=":", alpha=0.5)
+        ax2.legend(fontsize=11, loc="upper left")
+
+    ax2.set_xscale("log")
+    ax2.set_xlabel(r"$\kappa_f$ (universal fermion coupling)", fontsize=14)
+    ax2.set_ylabel(r"$\Delta\mathrm{EE}$ (hadronization cost)", fontsize=14)
+    ax2.tick_params(labelsize=12)
+    ax2.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    path = os.path.join(output_dir, "higgs_ee_three_regimes.pdf")
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+    plt.close(fig)
+    return path
+
+
+def plot_individual_kq_scans(quark_results, output_dir="plots", show=False):
+    """Plot EE in all three regimes for each quark's individual kappa_q scan.
+
+    quark_results: dict of quark_name -> scan results dict.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    quarks = list(quark_results.keys())
+    n = len(quarks)
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharex=True)
+    axes = axes.flatten()
+
+    quark_labels = {"t": "top", "b": "bottom", "c": "charm", "s": "strange"}
+    quark_sym = {"t": r"$\kappa_t$", "b": r"$\kappa_b$",
+                 "c": r"$\kappa_c$", "s": r"$\kappa_s$"}
+
+    for idx, quark in enumerate(quarks[:4]):
+        ax = axes[idx]
+        res = quark_results[quark]
+        kq = res["kappa_q"]
+        ee_p = res["ee_partonic"]
+        ee_h = res["ee_hadronized"]
+        ee_i = res["ee_inclusive"]
+
+        valid_p = ~np.isnan(ee_p)
+        valid_h = ~np.isnan(ee_h)
+
+        ax.plot(kq[valid_p], ee_p[valid_p], color="#1f77b4", linewidth=2,
+                label="Partonic")
+        ax.plot(kq[valid_h], ee_h[valid_h], color="#d62728", linewidth=2,
+                label="Hadronized")
+
+        # Mark maxima
+        max_p = np.nanargmax(ee_p)
+        max_h = np.nanargmax(ee_h)
+        ax.plot(kq[max_p], ee_p[max_p], "*", color="#1f77b4", markersize=12,
+                zorder=10, markeredgecolor="k", markeredgewidth=0.5)
+        ax.plot(kq[max_h], ee_h[max_h], "*", color="#d62728", markersize=12,
+                zorder=10, markeredgecolor="k", markeredgewidth=0.5)
+
+        # SM point
+        sm_idx = np.argmin(np.abs(kq - 1.0))
+        ax.axvline(x=1.0, color="gray", linestyle=":", alpha=0.5)
+        ax.plot(1.0, ee_p[sm_idx], "o", color="#1f77b4", markersize=7,
+                zorder=11, markeredgecolor="k", markeredgewidth=0.6)
+        ax.plot(1.0, ee_h[sm_idx], "s", color="#d62728", markersize=6,
+                zorder=11, markeredgecolor="k", markeredgewidth=0.6)
+
+        # Shade hadronization cost
+        ax.fill_between(kq[valid_p & valid_h], ee_h[valid_p & valid_h],
+                         ee_p[valid_p & valid_h], alpha=0.1, color="gray")
+
+        label_str = quark_labels.get(quark, quark)
+        ax.set_title(f"{label_str} ({quark_sym[quark]}): "
+                     f"part. max @ {kq[max_p]:.2f}, hadr. max @ {kq[max_h]:.2f}",
+                     fontsize=11)
+        ax.set_xscale("log")
+        ax.tick_params(labelsize=10)
+        ax.grid(True, alpha=0.3)
+        if idx >= 2:
+            ax.set_xlabel(r"$\kappa_q$", fontsize=12)
+        if idx % 2 == 0:
+            ax.set_ylabel("EE", fontsize=12)
+        if idx == 0:
+            ax.legend(fontsize=9, loc="best")
+
+    fig.suptitle("Higgs EE vs individual quark coupling: partonic vs hadronized",
+                 fontsize=14, y=1.01)
+    fig.tight_layout()
+    path = os.path.join(output_dir, "higgs_ee_individual_quarks.pdf")
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+    plt.close(fig)
+    return path
+
+
 def plot_all_higgs_ee(results, output_dir="plots", show=False,
-                      results_kf=None):
+                      results_kf=None, quark_results=None):
     """Generate all Higgs EE plots."""
     paths = []
 
@@ -555,6 +725,16 @@ def plot_all_higgs_ee(results, output_dir="plots", show=False,
         print(f"  Saved: {path}")
 
         path = plot_kf_ee_decomposition(results_kf, output_dir, show)
+        paths.append(path)
+        print(f"  Saved: {path}")
+
+        path = plot_kf_three_regimes(results_kf, output_dir, show)
+        paths.append(path)
+        print(f"  Saved: {path}")
+
+    # Individual quark scans
+    if quark_results is not None:
+        path = plot_individual_kq_scans(quark_results, output_dir, show)
         paths.append(path)
         print(f"  Saved: {path}")
 

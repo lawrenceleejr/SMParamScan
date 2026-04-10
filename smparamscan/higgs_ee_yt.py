@@ -193,6 +193,47 @@ def compute_higgs_ee_partonic(brs):
     return 1.0 - purity
 
 
+def compute_higgs_ee_hadronized(brs):
+    """Post-hadronization EE: color traced out, N_c=1 for all channels.
+
+    EE_had = 1 - Sum_i P_i BR_i^2
+
+    After hadronization, quarks and gluons form color-singlet hadrons.
+    The color degree of freedom is no longer observable, so N_c -> 1.
+    This INCREASES purity (decreases EE) for colored channels.
+    """
+    purity = 0.0
+    for ch in ALL_CHANNELS:
+        br = brs.get(ch, 0.0)
+        P = SPIN_FACTORS[ch]
+        purity += P * br**2
+    return 1.0 - purity
+
+
+def compute_higgs_ee_inclusive(brs):
+    """Inclusive hadronic EE: color traced out + merge light hadron channels.
+
+    After hadronization, gg and ss produce overlapping sets of light hadrons
+    that are experimentally indistinguishable. Merge them into one channel.
+    Heavy quarks (bb, cc) remain distinguishable via flavor tagging.
+    """
+    purity = 0.0
+    br_light = 0.0
+    light_hadron_channels = {"gg", "ss"}
+
+    for ch in ALL_CHANNELS:
+        br = brs.get(ch, 0.0)
+        if ch in light_hadron_channels:
+            br_light += br
+        else:
+            P = SPIN_FACTORS[ch]
+            purity += P * br**2
+
+    # Merged light-hadron channel (P = 1/2 for all sub-channels)
+    purity += 0.5 * br_light**2
+    return 1.0 - purity
+
+
 def compute_higgs_ee_simple(brs):
     """Simple linear entropy: EE = 1 - Sum BR_i^2."""
     return 1.0 - sum(br**2 for br in brs.values())
@@ -381,24 +422,35 @@ def compute_all_kf_quantities(kappa_f):
 
     brs, total_width = compute_higgs_brs_kf(kappa_f)
     if brs is None:
-        for key in ["ee_partonic", "ee_simple", "shannon", "total_width",
-                     "width_ratio", "ee_frac"]:
+        for key in ["ee_partonic", "ee_hadronized", "ee_inclusive",
+                     "ee_simple", "shannon", "total_width",
+                     "width_ratio", "ee_frac", "hadronization_cost"]:
             result[key] = np.nan
         return result
 
-    result["ee_partonic"] = compute_higgs_ee_partonic(brs)
+    # All three EE regimes
+    ee_part = compute_higgs_ee_partonic(brs)
+    ee_had = compute_higgs_ee_hadronized(brs)
+    ee_inc = compute_higgs_ee_inclusive(brs)
+
+    result["ee_partonic"] = ee_part
+    result["ee_hadronized"] = ee_had
+    result["ee_inclusive"] = ee_inc
     result["ee_simple"] = compute_higgs_ee_simple(brs)
     result["shannon"] = compute_higgs_shannon(brs)
+
+    # Hadronization cost: entropy lost when color is traced out
+    result["hadronization_cost"] = ee_part - ee_had
+
     result["total_width"] = total_width
     result["width_ratio"] = total_width / SM_TOTAL_WIDTH
-    result["ee_frac"] = result["ee_partonic"] / EE_MAX_NO_TT
+    result["ee_frac"] = ee_part / EE_MAX_NO_TT
 
     # Key BRs
     for ch in ALL_CHANNELS:
         result[f"br_{ch}"] = brs.get(ch, 0.0)
 
-    # gamgam signal strength: sigma(gg->h)*BR(gamgam) / SM
-    # production scales as kf^2 (gg->h), BR_gamgam = Gamma_gamgam/Gamma_total
+    # gamgam signal strength
     R_gam_kf = _gamgam_amplitude_sq_kf(kappa_f) / _GAMGAM_SM_KF
     result["mu_gamgam"] = kappa_f**2 * R_gam_kf * SM_TOTAL_WIDTH / total_width
 
@@ -432,7 +484,8 @@ def scan_higgs_kf(kf_min=0.05, kf_max=10.0, npoints=500):
 
     # Numerical derivatives
     dk = np.diff(np.log(kf_values))
-    for base_key in ["ee_partonic", "ee_simple", "shannon"]:
+    for base_key in ["ee_partonic", "ee_hadronized", "ee_inclusive",
+                      "ee_simple", "shannon"]:
         vals = results.get(base_key)
         if vals is None:
             continue
@@ -542,3 +595,124 @@ def find_higgs_features(results, y_target=1.0, window=0.5):
             print(f"  {key:25s} = {val:.8f}")
 
     return features
+
+
+# ── Individual kappa_q scans ────────────────────────────────────────
+
+# Quark properties for individual scans
+QUARK_INFO = {
+    "t": {"mass": SM_MT, "charge": 2.0/3.0, "br_key": "tt", "Nc": 3},
+    "b": {"mass": SM_MB, "charge": -1.0/3.0, "br_key": "bb", "Nc": 3},
+    "c": {"mass": SM_MC, "charge": 2.0/3.0, "br_key": "cc", "Nc": 3},
+    "s": {"mass": 0.100, "charge": -1.0/3.0, "br_key": "ss", "Nc": 3},
+}
+
+# SM fermion contributions to gg and gamgam amplitudes (for decomposition)
+_A_HALF_T = _A_half(_tau(M_HIGGS, SM_MT))
+_A_HALF_B = _A_half(_tau(M_HIGGS, SM_MB))
+_A_HALF_C = _A_half(_tau(M_HIGGS, SM_MC))
+_A_HALF_TAU = _A_half(_tau(M_HIGGS, SM_MTAU))
+_A_ONE_W = _A_one(_tau(M_HIGGS, M_W))
+
+# SM gg amplitude decomposed
+_GG_AMP_SM = _A_HALF_T + _A_HALF_B + _A_HALF_C  # complex sum
+
+
+def _gg_amplitude_sq_kq(quark, kappa_q):
+    """h->gg amplitude with one quark's coupling scaled by kappa_q."""
+    A = complex(0)
+    for q, A_half_sm in [("t", _A_HALF_T), ("b", _A_HALF_B), ("c", _A_HALF_C)]:
+        if q == quark:
+            A += kappa_q * A_half_sm
+        else:
+            A += A_half_sm
+    return abs(A)**2
+
+
+def _gamgam_amplitude_sq_kq(quark, kappa_q):
+    """h->gamgam amplitude with one quark's coupling scaled by kappa_q."""
+    A = complex(0)
+    for q, A_half_sm, Nc, Qsq in [
+        ("t", _A_HALF_T, 3.0, (2.0/3.0)**2),
+        ("b", _A_HALF_B, 3.0, (1.0/3.0)**2),
+        ("c", _A_HALF_C, 3.0, (2.0/3.0)**2),
+    ]:
+        kf = kappa_q if q == quark else 1.0
+        A += kf * Nc * Qsq * A_half_sm
+    # tau (not a quark — always at SM)
+    A += 1.0 * _A_HALF_TAU
+    # W boson
+    A += _A_ONE_W
+    return abs(A)**2
+
+
+def compute_higgs_brs_kq(quark, kappa_q):
+    """Compute Higgs BRs when varying a single quark's coupling.
+
+    The quark's tree-level width scales as kq^2, and its contribution
+    to the gg and gamgam loop amplitudes scales linearly with kq.
+    Everything else stays at SM.
+    """
+    kq2 = kappa_q**2
+    info = QUARK_INFO[quark]
+    br_key = info["br_key"]
+
+    widths = dict(SM_PARTIAL_WIDTHS)
+
+    # Scale this quark's tree-level width
+    widths[br_key] = kq2 * SM_PARTIAL_WIDTHS[br_key]
+
+    # Scale gg: quark's loop contribution scales by kq
+    R_gg = _gg_amplitude_sq_kq(quark, kappa_q) / abs(_GG_AMP_SM)**2
+    widths["gg"] = SM_PARTIAL_WIDTHS["gg"] * R_gg
+
+    # Scale gamgam: quark's loop contribution scales by kq
+    R_gam = _gamgam_amplitude_sq_kq(quark, kappa_q) / _GAMGAM_SM
+    widths["gamgam"] = SM_PARTIAL_WIDTHS["gamgam"] * R_gam
+    widths["zgam"] = SM_PARTIAL_WIDTHS["zgam"] * R_gam  # approximate
+
+    total = sum(widths.values())
+    if total <= 0:
+        return None, 0.0
+    brs = {ch: w / total for ch, w in widths.items()}
+    return brs, total
+
+
+def scan_higgs_kq(quark, kq_min=0.01, kq_max=20.0, npoints=500):
+    """Scan a single quark's kappa_q and compute EE in all three regimes.
+
+    Returns dict of quantity_name -> array.
+    """
+    kq_values = np.logspace(np.log10(kq_min), np.log10(kq_max), npoints)
+    results = {
+        "kappa_q": np.zeros(npoints),
+        "ee_partonic": np.zeros(npoints),
+        "ee_hadronized": np.zeros(npoints),
+        "ee_inclusive": np.zeros(npoints),
+        "hadronization_cost": np.zeros(npoints),
+        "total_width": np.zeros(npoints),
+    }
+    for ch in ALL_CHANNELS:
+        results[f"br_{ch}"] = np.zeros(npoints)
+
+    for i, kq in enumerate(kq_values):
+        results["kappa_q"][i] = kq
+        brs, total = compute_higgs_brs_kq(quark, kq)
+        if brs is None:
+            for k in results:
+                if k != "kappa_q":
+                    results[k][i] = np.nan
+            continue
+
+        ee_p = compute_higgs_ee_partonic(brs)
+        ee_h = compute_higgs_ee_hadronized(brs)
+        ee_i = compute_higgs_ee_inclusive(brs)
+        results["ee_partonic"][i] = ee_p
+        results["ee_hadronized"][i] = ee_h
+        results["ee_inclusive"][i] = ee_i
+        results["hadronization_cost"][i] = ee_p - ee_h
+        results["total_width"][i] = total
+        for ch in ALL_CHANNELS:
+            results[f"br_{ch}"][i] = brs.get(ch, 0.0)
+
+    return results
