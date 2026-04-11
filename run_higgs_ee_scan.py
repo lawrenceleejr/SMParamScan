@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """CLI — Scan Higgs decay EE as a function of y_t, universal kappa_f,
-individual quark couplings, and hadronic fragmentation multiplicity.
+individual quark couplings, hadronic fragmentation multiplicity, and M_W.
 
-Four complementary scans:
+Five complementary scans:
   1. y_t variation: physically change m_t, affecting loop form factors.
   2. Universal kappa_f: rescale all fermion couplings (paper's approach).
   3. Individual kappa_q: vary each quark's coupling separately.
   4. Fragmentation multiplicity: how hadronic multiplicity after
-     hadronization affects EE — resolves the question of whether
-     hadronization increases or decreases entanglement.
+     hadronization affects EE.
+  5. M_W variation: how the W boson mass affects Higgs EE through
+     the WW* channel, reproducing the paper's W mass result.
 """
 
 import argparse
@@ -17,7 +18,7 @@ from smparamscan.higgs_ee_yt import (
     scan_higgs_ee, find_higgs_features,
     scan_higgs_kf, scan_higgs_kq, EE_MAX_NO_TT,
     scan_ee_vs_multiplicity, scan_kf_with_multiplicity,
-    compute_higgs_ee_partonic, compute_higgs_ee_fragmented,
+    scan_kq_with_multiplicity, scan_higgs_ee_mw,
     SM_BRS,
 )
 from smparamscan.higgs_ee_plotter import plot_all_higgs_ee
@@ -26,7 +27,7 @@ import numpy as np
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Scan Higgs decay EE vs top Yukawa, kappa_f, individual quarks, and multiplicity."
+        description="Scan Higgs decay EE vs top Yukawa, kappa_f, individual quarks, multiplicity, and M_W."
     )
     parser.add_argument("--y-min", type=float, default=0.02)
     parser.add_argument("--y-max", type=float, default=10.0)
@@ -110,10 +111,6 @@ def main():
         print(f"  M_q = {M_test:>4d}: EE = {ee_frag[idx]:.6f} "
               f"({delta:+.2f}% vs partonic)")
 
-    print(f"\n  At realistic M_q ~ 10-50 (Higgs-scale jet multiplicity),")
-    print(f"  hadronization INCREASES EE beyond the partonic value.")
-    print(f"  The multiplicity effect dominates over color-decoherence.")
-
     # kf scan at multiple multiplicities
     print("\n  Scanning kappa_f at several multiplicities...")
     kf_mult_results = scan_kf_with_multiplicity(
@@ -133,31 +130,51 @@ def main():
         mi = np.nanargmax(ee_m)
         print(f"  {'M_q = ' + str(int(M_q_val)):<20s} {ee_m[mi]:>10.6f} {kf_m[mi]:>10.3f}")
 
-    # ── Summary table ──
+    # kappa_t and kappa_b at multiple multiplicities
+    print("\n  Scanning kappa_t and kappa_b at several multiplicities...")
+    kq_mult_results = {}
+    for quark in ["t", "b"]:
+        kq_mult_results[quark] = scan_kq_with_multiplicity(
+            quark, kq_min=0.01, kq_max=20.0, npoints=400,
+            M_values_quarks=[1.0, 3.0, 10.0, 30.0, 100.0]
+        )
+        kq_arr = kq_mult_results[quark]["kappa_q"]
+        print(f"\n  kappa_{quark} multiplicity scan:")
+        ee_p_q = kq_mult_results[quark]["ee_partonic"]
+        mp = np.nanargmax(ee_p_q)
+        print(f"    {'Partonic':<20s} max EE={ee_p_q[mp]:.6f} at k{quark}={kq_arr[mp]:.3f}")
+        for M_q_val in [1.0, 3.0, 10.0, 30.0, 100.0]:
+            key = f"ee_M{M_q_val:.0f}"
+            ee_m = kq_mult_results[quark][key]
+            mi = np.nanargmax(ee_m)
+            print(f"    {'M_q = ' + str(int(M_q_val)):<20s} max EE={ee_m[mi]:.6f} "
+                  f"at k{quark}={kq_arr[mi]:.3f}")
+
+    # ── Scan 5: M_W variation ──
     print()
     print("=" * 65)
-    print("SUMMARY: Where does each regime maximize?")
+    print("Scan 5: Higgs EE vs M_W")
     print("=" * 65)
-    print(f"  {'Scan':<25s} {'Partonic max':<18s} {'Hadronized max':<18s}")
-    print(f"  {'-'*25} {'-'*18} {'-'*18}")
+    mw_results = scan_higgs_ee_mw(mw_min=20.0, mw_max=120.0, npoints=400)
 
-    max_p = kf[np.nanargmax(results_kf["ee_partonic"])]
-    max_h = kf[np.nanargmax(results_kf["ee_hadronized"])]
-    print(f"  {'Universal kf':<25s} {max_p:<18.3f} {max_h:<18.3f}")
+    mw = mw_results["m_W"]
+    ee_mw = mw_results["ee_partonic"]
+    ee_mw_frag = mw_results["ee_fragmented"]
+    sm_mw_idx = np.argmin(np.abs(mw - 80.379))
+    max_mw_idx = np.nanargmax(ee_mw)
 
-    for quark in ["t", "b", "c", "s"]:
-        kq = quark_results[quark]["kappa_q"]
-        mp = kq[np.nanargmax(quark_results[quark]["ee_partonic"])]
-        mh = kq[np.nanargmax(quark_results[quark]["ee_hadronized"])]
-        print(f"  {'kappa_' + quark:<25s} {mp:<18.3f} {mh:<18.3f}")
+    print(f"  SM M_W = 80.379 GeV: partonic EE = {ee_mw[sm_mw_idx]:.6f}")
+    print(f"  Partonic max: EE = {ee_mw[max_mw_idx]:.6f} at M_W = {mw[max_mw_idx]:.1f} GeV")
 
-    print(f"\n  CORRECTED PICTURE (with fragmentation multiplicity):")
-    print(f"  - The naive 'hadronized' model (N_c -> 1) misses the key effect:")
-    print(f"    hadronic multiplicity >> N_c, so hadronization INCREASES EE.")
-    print(f"  - The partonic EE is a LOWER BOUND on the true post-hadronization EE.")
-    print(f"  - The top quark (no hadronization) sees partonic EE ~ {ee_part_sm:.4f}")
-    print(f"  - Light quarks (with hadronization at M~20) see EE ~ {ee_frag[np.argmin(np.abs(M_q - 20))]:.4f}")
-    print(f"  - Hadronization creates MORE entanglement, not less.")
+    max_mw_f = np.nanargmax(ee_mw_frag)
+    print(f"  Fragmented max (M_q=20): EE = {ee_mw_frag[max_mw_f]:.6f} "
+          f"at M_W = {mw[max_mw_f]:.1f} GeV")
+
+    # BR at SM
+    print(f"\n  BRs at SM M_W:")
+    for ch in ["WW", "bb", "gg", "ZZ"]:
+        br = mw_results[f"br_{ch}"][sm_mw_idx]
+        print(f"    BR({ch}) = {br:.4f}")
 
     # ── Generate plots ──
     print("\nGenerating plots...")
@@ -165,7 +182,9 @@ def main():
                               results_kf=results_kf,
                               quark_results=quark_results,
                               mult_results=mult_results,
-                              kf_mult_results=kf_mult_results)
+                              kf_mult_results=kf_mult_results,
+                              kq_mult_results=kq_mult_results,
+                              mw_results=mw_results)
     print(f"\nDone! {len(paths)} plots saved to {args.output_dir}/")
 
 

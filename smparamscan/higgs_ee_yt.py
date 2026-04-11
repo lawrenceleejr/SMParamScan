@@ -13,7 +13,7 @@ Form factors follow the conventions of Djouadi (hep-ph/0503173):
 import numpy as np
 from scipy import integrate
 
-from .entropy import P_WW, P_ZZ
+from .entropy import P_WW, P_ZZ, _compute_spin_factor_3body
 
 # ── Physical constants ──────────────────────────────────────────────
 V_HIGGS = 246.22   # Higgs vev [GeV]
@@ -877,5 +877,208 @@ def scan_kf_with_multiplicity(kf_min=0.05, kf_max=10.0, npoints=500,
                 ee[i] = compute_higgs_ee_fragmented(brs, M_quarks=M_q, M_gluons=M_g)
         results[key] = ee
     results["M_values_quarks"] = M_values_quarks
+
+    return results
+
+
+def scan_kq_with_multiplicity(quark, kq_min=0.01, kq_max=20.0, npoints=500,
+                               M_values_quarks=None, gluon_ratio=9.0/4.0):
+    """Scan a single quark's kappa_q at several hadronic multiplicity values.
+
+    Returns dict with kappa_q array and ee arrays for each multiplicity.
+    """
+    if M_values_quarks is None:
+        M_values_quarks = [1.0, 3.0, 10.0, 30.0, 100.0]
+
+    kq_arr = np.logspace(np.log10(kq_min), np.log10(kq_max), npoints)
+    results = {"kappa_q": kq_arr, "quark": quark}
+
+    # Partonic
+    ee_part = np.zeros(npoints)
+    for i, kq in enumerate(kq_arr):
+        brs, _ = compute_higgs_brs_kq(quark, kq)
+        if brs is None:
+            ee_part[i] = np.nan
+        else:
+            ee_part[i] = compute_higgs_ee_partonic(brs)
+    results["ee_partonic"] = ee_part
+
+    for M_q in M_values_quarks:
+        M_g = M_q * gluon_ratio
+        key = f"ee_M{M_q:.0f}"
+        ee = np.zeros(npoints)
+        for i, kq in enumerate(kq_arr):
+            brs, _ = compute_higgs_brs_kq(quark, kq)
+            if brs is None:
+                ee[i] = np.nan
+            else:
+                ee[i] = compute_higgs_ee_fragmented(brs, M_quarks=M_q, M_gluons=M_g)
+        results[key] = ee
+    results["M_values_quarks"] = M_values_quarks
+
+    return results
+
+
+# ── Higgs EE vs M_W ──────────────────────────────────────────────────
+
+_SIN2_TW = 1.0 - (M_W / 91.188)**2  # sin^2(theta_W) ≈ 0.2229
+
+
+def _off_shell_vv_width_integral(m_H, m_V):
+    """Compute the off-shell h -> VV* rate integral: 2*F_T + F_L.
+
+    Proportional to Gamma(h -> VV*).
+    """
+    if m_H <= m_V:
+        return 0.0
+    eps = m_H / m_V
+    y_max = (eps - 1.0)**2
+
+    def Y_func(y):
+        return (eps**2 - 1.0 - y)**2
+
+    def integrand_T(y):
+        Yval = Y_func(y)
+        arg = Yval - 4.0 * y
+        if arg <= 0:
+            return 0.0
+        return (y / (y - 1.0)**2) * np.sqrt(arg)
+
+    def integrand_L(y):
+        Yval = Y_func(y)
+        arg = Yval - 4.0 * y
+        if arg <= 0:
+            return 0.0
+        return (1.0 / (4.0 * (y - 1.0)**2)) * Yval * np.sqrt(arg)
+
+    F_T, _ = integrate.quad(integrand_T, 0, y_max, limit=200)
+    F_L, _ = integrate.quad(integrand_L, 0, y_max, limit=200)
+    return 2.0 * F_T + F_L
+
+
+_VV_INT_WW_SM = _off_shell_vv_width_integral(M_HIGGS, M_W)
+_VV_INT_ZZ_SM = _off_shell_vv_width_integral(M_HIGGS, 91.188)
+
+
+def compute_higgs_brs_mw(m_W_new):
+    """Compute Higgs BRs as a function of M_W.
+
+    h->WW* and h->ZZ* widths scale with M_W through off-shell phase space.
+    h->gamgam changes via the W loop form factor.
+    Fermion channels and h->gg are unchanged.
+    M_Z = M_W / cos(theta_W) with fixed sin^2(theta_W).
+    """
+    if m_W_new <= 0 or m_W_new >= M_HIGGS:
+        return None, 0.0, None, None
+
+    m_Z_new = m_W_new / np.sqrt(1.0 - _SIN2_TW)
+    widths = dict(SM_PARTIAL_WIDTHS)
+
+    # h->WW*
+    vv_int_new = _off_shell_vv_width_integral(M_HIGGS, m_W_new)
+    if _VV_INT_WW_SM > 0 and vv_int_new > 0:
+        R_WW = (m_W_new / M_W)**4 * vv_int_new / _VV_INT_WW_SM
+        widths["WW"] = SM_PARTIAL_WIDTHS["WW"] * R_WW
+    else:
+        widths["WW"] = 0.0
+
+    # h->ZZ*
+    if m_Z_new < M_HIGGS:
+        vv_int_zz = _off_shell_vv_width_integral(M_HIGGS, m_Z_new)
+        if _VV_INT_ZZ_SM > 0 and vv_int_zz > 0:
+            R_ZZ = (m_Z_new / 91.188)**4 * vv_int_zz / _VV_INT_ZZ_SM
+            widths["ZZ"] = SM_PARTIAL_WIDTHS["ZZ"] * R_ZZ
+        else:
+            widths["ZZ"] = 0.0
+    else:
+        widths["ZZ"] = 0.0
+
+    # h->gamgam: W loop changes
+    A_W_new = _A_one(_tau(M_HIGGS, m_W_new))
+    A_gamgam_new = complex(0)
+    for m_q, Q in [(SM_MT, 2.0/3.0), (SM_MB, -1.0/3.0), (SM_MC, 2.0/3.0)]:
+        A_gamgam_new += 3.0 * Q**2 * _A_half(_tau(M_HIGGS, m_q))
+    A_gamgam_new += 1.0 * _A_half(_tau(M_HIGGS, SM_MTAU))
+    A_gamgam_new += A_W_new
+    R_gamgam = abs(A_gamgam_new)**2 / _GAMGAM_SM
+    widths["gamgam"] = SM_PARTIAL_WIDTHS["gamgam"] * R_gamgam
+    widths["zgam"] = SM_PARTIAL_WIDTHS["zgam"] * R_gamgam
+
+    total = sum(widths.values())
+    if total <= 0:
+        return None, 0.0, None, None
+
+    brs = {ch: w / total for ch, w in widths.items()}
+    P_WW_new = _compute_spin_factor_3body(M_HIGGS, m_W_new) if m_W_new < M_HIGGS else 0.5
+    P_ZZ_new = _compute_spin_factor_3body(M_HIGGS, m_Z_new) if m_Z_new < M_HIGGS else 0.5
+    return brs, total, P_WW_new, P_ZZ_new
+
+
+def _ee_partonic_with_spin(brs, P_WW_val, P_ZZ_val):
+    """Partonic EE using provided WW/ZZ spin factors (for M_W scans)."""
+    purity = 0.0
+    for ch in ALL_CHANNELS:
+        br = brs.get(ch, 0.0)
+        if ch == "WW":
+            P = P_WW_val
+        elif ch == "ZZ":
+            P = P_ZZ_val
+        else:
+            P = SPIN_FACTORS[ch]
+        Nc = COLOR_FACTORS[ch]
+        purity += (P / Nc) * br**2
+    return 1.0 - purity
+
+
+def _ee_fragmented_with_spin(brs, P_WW_val, P_ZZ_val,
+                              M_quarks=20.0, M_gluons=45.0):
+    """Fragmented EE using provided WW/ZZ spin factors."""
+    purity = 0.0
+    for ch in ALL_CHANNELS:
+        br = brs.get(ch, 0.0)
+        if ch == "WW":
+            P = P_WW_val
+        elif ch == "ZZ":
+            P = P_ZZ_val
+        else:
+            P = SPIN_FACTORS[ch]
+        if ch == "gg":
+            purity += (P / M_gluons) * br**2
+        elif ch in COLORED_CHANNELS:
+            purity += (P / M_quarks) * br**2
+        else:
+            purity += P * br**2
+    return 1.0 - purity
+
+
+def scan_higgs_ee_mw(mw_min=20.0, mw_max=120.0, npoints=500):
+    """Scan Higgs EE as a function of M_W."""
+    mw_values = np.linspace(mw_min, mw_max, npoints)
+    results = {
+        "m_W": mw_values,
+        "ee_partonic": np.full(npoints, np.nan),
+        "ee_fragmented": np.full(npoints, np.nan),
+        "total_width": np.full(npoints, np.nan),
+        "P_WW": np.full(npoints, np.nan),
+        "P_ZZ": np.full(npoints, np.nan),
+    }
+    for ch in ALL_CHANNELS:
+        results[f"br_{ch}"] = np.full(npoints, np.nan)
+
+    for i, mw in enumerate(mw_values):
+        brs, total, P_WW_new, P_ZZ_new = compute_higgs_brs_mw(mw)
+        if brs is None:
+            continue
+        results["ee_partonic"][i] = _ee_partonic_with_spin(brs, P_WW_new, P_ZZ_new)
+        results["ee_fragmented"][i] = _ee_fragmented_with_spin(
+            brs, P_WW_new, P_ZZ_new, M_quarks=20.0, M_gluons=45.0)
+        results["total_width"][i] = total
+        results["P_WW"][i] = P_WW_new
+        results["P_ZZ"][i] = P_ZZ_new
+        for ch in ALL_CHANNELS:
+            results[f"br_{ch}"][i] = brs.get(ch, 0.0)
+        if (i + 1) % 100 == 0 or i == 0:
+            print(f"  [{i+1}/{npoints}] M_W={mw:.1f} GeV, "
+                  f"EE={results['ee_partonic'][i]:.6f}")
 
     return results

@@ -830,9 +830,173 @@ def plot_kf_with_multiplicity(kf_mult_results, output_dir="plots", show=False):
     return path
 
 
+def plot_kq_with_multiplicity(kq_mult_results, output_dir="plots", show=False):
+    """Plot individual quark kappa_q scan at several hadronic multiplicities.
+
+    kq_mult_results: dict of quark_name -> scan results from scan_kq_with_multiplicity.
+    Generates one plot per quark.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    paths = []
+
+    quark_labels = {"t": "top", "b": "bottom", "c": "charm", "s": "strange"}
+    quark_sym = {"t": r"$\kappa_t$", "b": r"$\kappa_b$",
+                 "c": r"$\kappa_c$", "s": r"$\kappa_s$"}
+
+    for quark, res in kq_mult_results.items():
+        kq = res["kappa_q"]
+        ee_part = res["ee_partonic"]
+        M_vals = res["M_values_quarks"]
+
+        fig, ax = plt.subplots(figsize=(11, 7))
+
+        # Partonic
+        valid = ~np.isnan(ee_part)
+        ax.plot(kq[valid], ee_part[valid], color="black", linewidth=2.5,
+                linestyle="--", label="Partonic (full color)", zorder=5)
+
+        # Multiplicity curves
+        colors = plt.cm.plasma(np.linspace(0.15, 0.85, len(M_vals)))
+        for j, M_q in enumerate(M_vals):
+            key = f"ee_M{M_q:.0f}"
+            ee = res[key]
+            valid_m = ~np.isnan(ee)
+            lbl = f"$M_q$ = {M_q:.0f}"
+            if M_q == 1:
+                lbl += " (naive hadr.)"
+            elif M_q == 3:
+                lbl += " ($= N_c$, crossover)"
+            ls = "-" if M_q >= 3 else ":"
+            ax.plot(kq[valid_m], ee[valid_m], color=colors[j], linewidth=2,
+                    linestyle=ls, label=lbl)
+
+            max_idx = np.nanargmax(ee)
+            ax.plot(kq[max_idx], ee[max_idx], "*", color=colors[j],
+                    markersize=12, zorder=10, markeredgecolor="k",
+                    markeredgewidth=0.5)
+
+        # SM point
+        ax.axvline(x=1.0, color="gray", linestyle=":", alpha=0.5,
+                   label=f"SM ({quark_sym[quark]} = 1)")
+
+        ax.set_xscale("log")
+        ax.set_xlabel(f"{quark_sym[quark]} ({quark_labels[quark]} Yukawa coupling)",
+                      fontsize=14)
+        ax.set_ylabel("Entanglement Entropy", fontsize=14)
+        ax.set_title(
+            f"Higgs EE vs {quark_sym[quark]} at different hadronic multiplicities",
+            fontsize=13)
+        ax.legend(fontsize=9, loc="best")
+        ax.tick_params(labelsize=12)
+        ax.grid(True, alpha=0.3)
+
+        fig.tight_layout()
+        path = os.path.join(output_dir, f"higgs_ee_k{quark}_multiplicity.pdf")
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        if show:
+            plt.show()
+        plt.close(fig)
+        paths.append(path)
+
+    return paths
+
+
+def plot_higgs_ee_vs_mw(mw_results, output_dir="plots", show=False):
+    """Plot Higgs EE as a function of M_W.
+
+    Two panels: top shows EE (partonic + fragmented), bottom shows key BRs.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    mw = mw_results["m_W"]
+    ee_part = mw_results["ee_partonic"]
+    ee_frag = mw_results.get("ee_fragmented")
+    br_WW = mw_results.get("br_WW")
+    br_bb = mw_results.get("br_bb")
+    br_gg = mw_results.get("br_gg")
+    br_ZZ = mw_results.get("br_ZZ")
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 10), sharex=True,
+                                    gridspec_kw={"height_ratios": [2, 1]})
+
+    # ── Top panel: EE ──
+    valid = ~np.isnan(ee_part)
+    ax1.plot(mw[valid], ee_part[valid], color="#1f77b4", linewidth=2.5,
+             label="Partonic EE")
+    if ee_frag is not None:
+        valid_f = ~np.isnan(ee_frag)
+        ax1.plot(mw[valid_f], ee_frag[valid_f], color="#ff7f0e", linewidth=2.5,
+                 label="Fragmented EE ($M_q$=20)")
+
+    # SM point
+    sm_mw = 80.379
+    sm_idx = np.argmin(np.abs(mw - sm_mw))
+    ax1.axvline(x=sm_mw, color="gray", linestyle=":", alpha=0.6)
+    ax1.plot(sm_mw, ee_part[sm_idx], "o", color="#1f77b4", markersize=10,
+             zorder=11, markeredgecolor="k", markeredgewidth=0.8,
+             label=f"SM: $M_W$ = {sm_mw} GeV")
+
+    # Mark partonic max
+    max_idx = np.nanargmax(ee_part)
+    ax1.plot(mw[max_idx], ee_part[max_idx], "*", color="#1f77b4",
+             markersize=14, zorder=10, markeredgecolor="k",
+             markeredgewidth=0.5)
+    ax1.annotate(f"Partonic max\n$M_W$={mw[max_idx]:.1f} GeV",
+                 xy=(mw[max_idx], ee_part[max_idx]),
+                 xytext=(mw[max_idx] + 8, ee_part[max_idx] - 0.02),
+                 fontsize=10, color="#1f77b4",
+                 arrowprops=dict(arrowstyle="->", color="#1f77b4"))
+
+    if ee_frag is not None:
+        max_f = np.nanargmax(ee_frag)
+        ax1.plot(mw[max_f], ee_frag[max_f], "*", color="#ff7f0e",
+                 markersize=14, zorder=10, markeredgecolor="k",
+                 markeredgewidth=0.5)
+
+    # 2M_W = m_H threshold
+    ax1.axvline(x=M_HIGGS / 2, color="red", linestyle="--", alpha=0.4,
+                label=f"$2M_W = m_H$ ({M_HIGGS/2:.1f} GeV)")
+
+    ax1.set_ylabel("Entanglement Entropy", fontsize=14)
+    ax1.set_title("Higgs decay EE vs $M_W$\n"
+                  "(SM $W$ mass is near the EE maximum)",
+                  fontsize=13)
+    ax1.legend(fontsize=10, loc="best")
+    ax1.tick_params(labelsize=12)
+    ax1.grid(True, alpha=0.3)
+
+    # ── Bottom panel: BRs ──
+    if br_WW is not None:
+        ax2.plot(mw, br_WW, color="#d62728", linewidth=2, label="$WW^*$")
+    if br_ZZ is not None:
+        ax2.plot(mw, br_ZZ, color="#9467bd", linewidth=2, label="$ZZ^*$")
+    if br_bb is not None:
+        ax2.plot(mw, br_bb, color="#2ca02c", linewidth=2, label="$b\\bar{b}$")
+    if br_gg is not None:
+        ax2.plot(mw, br_gg, color="#8c564b", linewidth=2, label="$gg$")
+
+    ax2.axvline(x=sm_mw, color="gray", linestyle=":", alpha=0.6)
+    ax2.axvline(x=M_HIGGS / 2, color="red", linestyle="--", alpha=0.4)
+
+    ax2.set_xlabel("$M_W$ [GeV]", fontsize=14)
+    ax2.set_ylabel("Branching Ratio", fontsize=14)
+    ax2.legend(fontsize=10, loc="best")
+    ax2.tick_params(labelsize=12)
+    ax2.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    path = os.path.join(output_dir, "higgs_ee_vs_mw.pdf")
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+    plt.close(fig)
+    return path
+
+
 def plot_all_higgs_ee(results, output_dir="plots", show=False,
                       results_kf=None, quark_results=None,
-                      mult_results=None, kf_mult_results=None):
+                      mult_results=None, kf_mult_results=None,
+                      kq_mult_results=None, mw_results=None):
     """Generate all Higgs EE plots."""
     paths = []
 
@@ -888,6 +1052,19 @@ def plot_all_higgs_ee(results, output_dir="plots", show=False,
 
     if kf_mult_results is not None:
         path = plot_kf_with_multiplicity(kf_mult_results, output_dir, show)
+        paths.append(path)
+        print(f"  Saved: {path}")
+
+    # Individual quark multiplicity plots
+    if kq_mult_results is not None:
+        kq_paths = plot_kq_with_multiplicity(kq_mult_results, output_dir, show)
+        for p in kq_paths:
+            paths.append(p)
+            print(f"  Saved: {p}")
+
+    # Higgs EE vs M_W
+    if mw_results is not None:
+        path = plot_higgs_ee_vs_mw(mw_results, output_dir, show)
         paths.append(path)
         print(f"  Saved: {path}")
 
